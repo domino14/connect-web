@@ -181,9 +181,15 @@ export function connectErrorFromJson(
   if (!code) {
     throw newParseError(jsonValue.code, ".code");
   }
-  const message = jsonValue.message;
+  let message = jsonValue.message;
   if (message != null && typeof message !== "string") {
     throw newParseError(jsonValue.code, ".message");
+  }
+  if (!message) {
+    message = jsonValue.msg;
+    if (message != null && typeof message !== "string") {
+      throw newParseError(jsonValue.code, ".msg");
+    }
   }
   const error = new ConnectError(message ?? "", code, undefined, metadata);
   if ("details" in jsonValue && Array.isArray(jsonValue.details)) {
