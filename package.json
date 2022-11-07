@@ -1,6 +1,6 @@
 {
     "name": "connect-web-domino14",
-    "private": true,
+    "version": "1.0.0",
     "workspaces": [
         "./packages/connect-core",
         "./packages/connect-node",
