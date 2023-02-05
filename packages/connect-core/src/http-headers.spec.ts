@@ -1,4 +1,4 @@
-// Copyright 2021-2022 Buf Technologies, Inc.
+// Copyright 2021-2023 Buf Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,6 +14,9 @@
 
 import { proto3, ScalarType } from "@bufbuild/protobuf";
 import { decodeBinaryHeader, encodeBinaryHeader } from "./http-headers.js";
+import { node16FetchHeadersPolyfill } from "./node16-polyfill-helper.spec.js";
+
+node16FetchHeadersPolyfill();
 
 // prettier-ignore
 const M = proto3.makeMessageType("handwritten.M", [

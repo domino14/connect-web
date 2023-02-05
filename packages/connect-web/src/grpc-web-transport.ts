@@ -1,4 +1,4 @@
-// Copyright 2021-2022 Buf Technologies, Inc.
+// Copyright 2021-2023 Buf Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -384,14 +384,12 @@ function extractHeadersError(header: Headers): ConnectError | undefined {
     return new ConnectError(
       `invalid grpc-status: ${value}`,
       Code.Internal,
-      undefined,
       header
     );
   }
   return new ConnectError(
     decodeURIComponent(header.get("grpc-message") ?? ""),
     code,
-    undefined,
     header
   );
 }
@@ -407,12 +405,7 @@ function extractDetailsError(header: Headers): ConnectError | undefined {
     if (status.code == 0) {
       return undefined;
     }
-    const error = new ConnectError(
-      status.message,
-      status.code,
-      undefined,
-      header
-    );
+    const error = new ConnectError(status.message, status.code, header);
     error.details.push(...status.details);
     return error;
   } catch (e) {

@@ -1,4 +1,4 @@
-// Copyright 2021-2022 Buf Technologies, Inc.
+// Copyright 2021-2023 Buf Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 
 import type { BinaryReadOptions, MessageType } from "@bufbuild/protobuf";
 import { Message, protoBase64 } from "@bufbuild/protobuf";
-import { ConnectError } from "./connect-error.js";
+import { connectErrorFromReason } from "./connect-error.js";
 import { Code } from "./code.js";
 
 /**
@@ -76,9 +76,20 @@ export function decodeBinaryHeader<T extends Message<T>>(
     }
     return bytes;
   } catch (e) {
-    throw new ConnectError(
-      e instanceof Error ? e.message : String(e),
-      Code.DataLoss
-    );
+    throw connectErrorFromReason(e, Code.DataLoss);
   }
+}
+
+/**
+ * Merge two or more Headers objects by appending all fields from
+ * all inputs to a new Headers object.
+ */
+export function appendHeaders(...headers: Headers[]): Headers {
+  const h = new Headers();
+  for (const e of headers) {
+    e.forEach((value, key) => {
+      h.append(key, value);
+    });
+  }
+  return h;
 }

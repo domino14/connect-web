@@ -1,4 +1,4 @@
-// Copyright 2021-2022 Buf Technologies, Inc.
+// Copyright 2021-2023 Buf Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -69,22 +69,9 @@ export class ConnectError extends Error {
    * Create a new ConnectError. If no code is provided, code "unknown" is
    * used.
    */
-  constructor(message: string, code?: Code, metadata?: HeadersInit);
-  /**
-   * @deprecated We do not support providing error details in the constructor.
-   * This signature was left here by accident, and will be removed in the next
-   * release.
-   */
-  constructor(
-    message: string,
-    code?: Code,
-    details?: AnyMessage[],
-    metadata?: HeadersInit
-  );
   constructor(
     message: string,
     code: Code = Code.Unknown,
-    detailsOrMetadata?: AnyMessage[] | HeadersInit,
     metadata?: HeadersInit
   ) {
     super(createMessage(message, code));
@@ -92,12 +79,7 @@ export class ConnectError extends Error {
     Object.setPrototypeOf(this, new.target.prototype);
     this.rawMessage = message;
     this.code = code;
-    // TODO once we remove the deprecated constructor, this can become `new Headers(metadata ?? {})`
-    const metadataInit =
-      metadata ??
-      (Array.isArray(detailsOrMetadata) ? undefined : detailsOrMetadata) ??
-      {};
-    this.metadata = new Headers(metadataInit);
+    this.metadata = new Headers(metadata);
     this.details = [];
   }
 }
@@ -136,13 +118,9 @@ export function connectErrorDetails(
   for (const data of error.details) {
     try {
       const any = new Any(data);
-      const name = any.typeUrl.substring(any.typeUrl.lastIndexOf("/") + 1);
-      const type = typeRegistry.findMessage(name);
-      if (type) {
-        const message = new type();
-        if (any.unpackTo(message)) {
-          details.push(message);
-        }
+      const message = any.unpack(typeRegistry);
+      if (message) {
+        details.push(message);
       }
     } catch (_) {
       //
@@ -185,13 +163,14 @@ export function connectErrorFromJson(
   if (message != null && typeof message !== "string") {
     throw newParseError(jsonValue.code, ".message");
   }
-  if (!message) {
+  if (message == null) {
     message = jsonValue.msg;
     if (message != null && typeof message !== "string") {
       throw newParseError(jsonValue.code, ".msg");
     }
   }
-  const error = new ConnectError(message ?? "", code, undefined, metadata);
+  const error = new ConnectError(message ?? "", code, metadata);
+
   if ("details" in jsonValue && Array.isArray(jsonValue.details)) {
     for (const detail of jsonValue.details) {
       if (

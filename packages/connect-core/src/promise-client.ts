@@ -1,4 +1,4 @@
-// Copyright 2021-2022 Buf Technologies, Inc.
+// Copyright 2021-2023 Buf Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,9 +24,10 @@ import type {
 import { Message, MethodKind } from "@bufbuild/protobuf";
 import type { Transport } from "./transport.js";
 import { makeAnyClient } from "./any-client.js";
-import type { StreamingConn } from "./interceptor.js";
 import type { CallOptions } from "./call-options.js";
 import { ConnectError } from "./connect-error.js";
+import { Code } from "./code.js";
+import { createAsyncIterable } from "./async-iterable.js";
 
 // prettier-ignore
 /**
@@ -38,34 +39,10 @@ export type PromiseClient<T extends ServiceType> = {
   [P in keyof T["methods"]]:
     T["methods"][P] extends MethodInfoUnary<infer I, infer O>           ? (request: PartialMessage<I>, options?: CallOptions) => Promise<O>
   : T["methods"][P] extends MethodInfoServerStreaming<infer I, infer O> ? (request: PartialMessage<I>, options?: CallOptions) => AsyncIterable<O>
-  : T["methods"][P] extends MethodInfoClientStreaming<infer I, infer O> ? (options?: CallOptions) => Promise<ClientStreamCall<PartialMessage<I>, O>>
-  : T["methods"][P] extends MethodInfoBiDiStreaming<infer I, infer O>   ? (options?: CallOptions) => Promise<ClientBiDiCall<PartialMessage<I>, O>>
+  : T["methods"][P] extends MethodInfoClientStreaming<infer I, infer O> ? (request: AsyncIterable<PartialMessage<I>>, options?: CallOptions) => Promise<O>
+  : T["methods"][P] extends MethodInfoBiDiStreaming<infer I, infer O>   ? (request: AsyncIterable<PartialMessage<I>>, options?: CallOptions) => AsyncIterable<O>
   : never;
 };
-
-// TODO update docs
-export interface ClientStreamCall<I, O> {
-  send(input: I): Promise<void>;
-
-  close(): void;
-
-  closed: boolean;
-
-  receive(): Promise<O>;
-}
-
-// TODO update docs
-export interface ClientBiDiCall<I, O> {
-  send(input: I): Promise<void>;
-
-  close(): void;
-
-  closed: boolean;
-
-  receiveAll(): AsyncIterable<O>;
-
-  receive(): Promise<O | null>;
-}
 
 /**
  * Create a PromiseClient for the given service, invoking RPCs through the
@@ -128,154 +105,117 @@ type ServerStreamingFn<I extends Message<I>, O extends Message<O>> = (
   options?: CallOptions
 ) => AsyncIterable<O>;
 
-function createServerStreamingFn<I extends Message<I>, O extends Message<O>>(
+export function createServerStreamingFn<
+  I extends Message<I>,
+  O extends Message<O>
+>(
   transport: Transport,
   service: ServiceType,
   method: MethodInfo<I, O>
 ): ServerStreamingFn<I, O> {
-  return function (input, options): AsyncIterable<O> {
-    let conn: StreamingConn<I, O> | undefined;
-    return {
-      [Symbol.asyncIterator](): AsyncIterator<O> {
-        return {
-          async next() {
-            if (!conn) {
-              conn = await transport.stream<I, O>(
-                service,
-                method,
-                options?.signal,
-                options?.timeoutMs,
-                options?.headers
-              );
-              await conn.send(input);
-              await conn.close();
-              options?.onHeader?.(await conn.responseHeader);
-            }
-            const result = await conn.read();
-            if (result.done) {
-              options?.onTrailer?.(await conn.responseTrailer);
-              return {
-                done: true,
-                value: undefined,
-              };
-            }
-            return {
-              done: false,
-              value: result.value,
-            };
-          },
-        };
-      },
-    };
+  return async function* (input, options): AsyncIterable<O> {
+    const inputMessage =
+      input instanceof method.I ? input : new method.I(input);
+    const response = await transport.stream<I, O>(
+      service,
+      method,
+      options?.signal,
+      options?.timeoutMs,
+      options?.headers,
+      createAsyncIterable([inputMessage])
+    );
+    options?.onHeader?.(response.header);
+    yield* response.message;
+    options?.onTrailer?.(response.trailer);
   };
 }
 
 /**
- * ClientStreamFn is the method signature for a client streaming method of a PromiseClient.
+ * ClientStreamFn is the method signature for a client streaming method of a
+ * PromiseClient.
  */
 type ClientStreamingFn<I extends Message<I>, O extends Message<O>> = (
+  request: AsyncIterable<PartialMessage<I>>,
   options?: CallOptions
-) => Promise<ClientStreamCall<PartialMessage<I>, O>>;
+) => Promise<O>;
 
-function createClientStreamingFn<I extends Message<I>, O extends Message<O>>(
+export function createClientStreamingFn<
+  I extends Message<I>,
+  O extends Message<O>
+>(
   transport: Transport,
   service: ServiceType,
   method: MethodInfo<I, O>
 ): ClientStreamingFn<I, O> {
   return async function (
+    request: AsyncIterable<PartialMessage<I>>,
     options?: CallOptions
-  ): Promise<ClientStreamCall<PartialMessage<I>, O>> {
-    const conn = await transport.stream<I, O>(
+  ): Promise<O> {
+    async function* input() {
+      for await (const partial of request) {
+        yield partial instanceof method.I ? partial : new method.I(partial);
+      }
+    }
+    const response = await transport.stream<I, O>(
       service,
       method,
       options?.signal,
       options?.timeoutMs,
-      options?.headers
+      options?.headers,
+      input()
     );
-    void conn.responseHeader.then((value) => options?.onHeader?.(value));
-    void conn.responseTrailer.then((value) => options?.onTrailer?.(value));
-    return {
-      send(input) {
-        return conn.send(input);
-      },
-      close() {
-        return conn.close();
-      },
-      get closed() {
-        return conn.closed;
-      },
-      async receive(): Promise<O> {
-        const r = await conn.read();
-        if (r.done) {
-          // TODO better error message
-          throw new ConnectError("missing response message from transport");
-        }
-        return r.value;
-      },
-    };
+    options?.onHeader?.(response.header);
+    let singleMessage: O | undefined;
+    for await (const message of response.message) {
+      singleMessage = message;
+    }
+    if (!singleMessage) {
+      throw new ConnectError(
+        "protocol error: missing response message",
+        Code.Internal
+      );
+    }
+    options?.onTrailer?.(response.trailer);
+    return singleMessage;
   };
 }
 
 /**
- * BiDiStreamFn is the method signature for a bi-directional streaming method of a PromiseClient.
+ * BiDiStreamFn is the method signature for a bi-directional streaming method
+ * of a PromiseClient.
  */
 type BiDiStreamingFn<I extends Message<I>, O extends Message<O>> = (
+  request: AsyncIterable<PartialMessage<I>>,
   options?: CallOptions
-) => Promise<ClientBiDiCall<PartialMessage<I>, O>>;
+) => AsyncIterable<O>;
 
-function createBiDiStreamingFn<I extends Message<I>, O extends Message<O>>(
+export function createBiDiStreamingFn<
+  I extends Message<I>,
+  O extends Message<O>
+>(
   transport: Transport,
   service: ServiceType,
   method: MethodInfo<I, O>
 ): BiDiStreamingFn<I, O> {
-  return async function (
+  return async function* (
+    request: AsyncIterable<PartialMessage<I>>,
     options?: CallOptions
-  ): Promise<ClientBiDiCall<PartialMessage<I>, O>> {
-    const conn = await transport.stream<I, O>(
+  ): AsyncIterable<O> {
+    async function* input() {
+      for await (const partial of request) {
+        yield partial instanceof method.I ? partial : new method.I(partial);
+      }
+    }
+    const response = await transport.stream<I, O>(
       service,
       method,
       options?.signal,
       options?.timeoutMs,
-      options?.headers
+      options?.headers,
+      input()
     );
-    void conn.responseHeader.then((value) => options?.onHeader?.(value));
-    void conn.responseTrailer.then((value) => options?.onTrailer?.(value));
-    return {
-      send(input) {
-        return conn.send(input);
-      },
-      close() {
-        return conn.close();
-      },
-      get closed() {
-        return conn.closed;
-      },
-      receiveAll(): AsyncIterable<O> {
-        return {
-          [Symbol.asyncIterator](): AsyncIterator<O> {
-            return {
-              async next() {
-                const result = await conn.read();
-                if (result.done) {
-                  options?.onTrailer?.(await conn.responseTrailer);
-                  return {
-                    done: true,
-                    value: undefined,
-                  };
-                }
-                return {
-                  done: false,
-                  value: result.value,
-                };
-              },
-            };
-          },
-        };
-      },
-      async receive(): Promise<O | null> {
-        const r = await conn.read();
-        return r.value ?? null;
-      },
-    };
+    options?.onHeader?.(response.header);
+    yield* response.message;
+    options?.onTrailer?.(response.trailer);
   };
 }

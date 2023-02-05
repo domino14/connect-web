@@ -1,4 +1,4 @@
-// Copyright 2021-2022 Buf Technologies, Inc.
+// Copyright 2021-2023 Buf Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,24 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { createEnvelopeReadableStream, encodeEnvelopes } from "./envelope.js";
-import { ReadableStream as NodeReadableStream } from "stream/web";
+import {
+  createEnvelopeReadableStream,
+  encodeEnvelopes,
+  envelopeCompress,
+  envelopeDecompress,
+  EnvelopedMessage,
+} from "./envelope.js";
+import type { Compression } from "./compression.js";
+import { ConnectError, connectErrorFromReason } from "./connect-error.js";
+import { Code } from "./code.js";
+import { node16WhatwgStreamPolyfill } from "./node16-polyfill-helper.spec.js";
 
-// node >= v16 has an implementation for WHATWG streams, but doesn't expose
-// them in the global scope, nor globalThis.
-if (typeof globalThis.ReadableStream !== "function") {
-  globalThis.ReadableStream =
-    NodeReadableStream as unknown as typeof ReadableStream;
-}
+node16WhatwgStreamPolyfill();
 
 /**
- * Create a WHATWG ReadableStream from a Uint8Array.
+ * Create a WHATWG ReadableStream from a Uint8Array for usage in tests.
  */
-function webReadableStreamFromBytes(
-  bytes: Uint8Array,
-  chunkSize = 2,
-  delay = 5
-) {
+function createReadableByteStream(bytes: Uint8Array, chunkSize = 2, delay = 5) {
   let offset = 0;
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
@@ -47,7 +47,7 @@ function webReadableStreamFromBytes(
 describe("createEnvelopeReadableStream()", () => {
   it("reads empty stream", async () => {
     const reader = createEnvelopeReadableStream(
-      webReadableStreamFromBytes(new Uint8Array(0))
+      createReadableByteStream(new Uint8Array(0))
     ).getReader();
     const r = await reader.read();
     expect(r.done).toBeTrue();
@@ -69,7 +69,7 @@ describe("createEnvelopeReadableStream()", () => {
       },
     ];
     const reader = createEnvelopeReadableStream(
-      webReadableStreamFromBytes(encodeEnvelopes(...input))
+      createReadableByteStream(encodeEnvelopes(...input))
     ).getReader();
     for (const want of input) {
       const r = await reader.read();
@@ -133,7 +133,7 @@ describe("createEnvelopeReadableStream()", () => {
       },
     ];
     const reader = createEnvelopeReadableStream(
-      webReadableStreamFromBytes(encodeEnvelopes(...input))
+      createReadableByteStream(encodeEnvelopes(...input))
     ).getReader();
     for (const want of input) {
       const r = await reader.read();
@@ -144,5 +144,143 @@ describe("createEnvelopeReadableStream()", () => {
     }
     const r = await reader.read();
     expect(r.done).toBeTrue();
+  });
+});
+
+describe("envelope compression", function () {
+  const compressionReverse: Compression = {
+    name: "fake",
+    compress(bytes) {
+      const b = new Uint8Array(bytes.byteLength);
+      b.set(bytes, 0);
+      return Promise.resolve(b.reverse());
+    },
+    decompress(bytes, readMaxBytes) {
+      if (bytes.byteLength > readMaxBytes) {
+        return Promise.reject(
+          new ConnectError(
+            `message is larger than configured readMaxBytes ${readMaxBytes} after decompression`,
+            Code.ResourceExhausted
+          )
+        );
+      }
+      const b = new Uint8Array(bytes.byteLength);
+      b.set(bytes, 0);
+      return Promise.resolve(b.reverse());
+    },
+  };
+  const uncompressedEnvelope: EnvelopedMessage = {
+    flags: 0,
+    data: new Uint8Array([0xde, 0xad, 0xbe, 0xe1]),
+  };
+  const compressedEnvelope: EnvelopedMessage = {
+    flags: 0 | 0b00000001,
+    data: new Uint8Array([0xde, 0xad, 0xbe, 0xe1].reverse()),
+  };
+  describe("envelopeDecompress()", function () {
+    it("should decompress envelopes", async function () {
+      const got = await envelopeDecompress(
+        compressedEnvelope,
+        compressionReverse,
+        Number.MAX_SAFE_INTEGER
+      );
+      expect(got).toEqual(uncompressedEnvelope);
+    });
+    it("should not decompress uncompressed envelopes", async function () {
+      const got = await envelopeDecompress(
+        uncompressedEnvelope,
+        compressionReverse,
+        Number.MAX_SAFE_INTEGER
+      );
+      expect(got).toEqual(uncompressedEnvelope);
+    });
+    it("should pass readMaxBytes to compression", async function () {
+      try {
+        await envelopeDecompress(compressedEnvelope, compressionReverse, 3);
+        fail("expected error");
+      } catch (e) {
+        expect(e).toBeInstanceOf(ConnectError);
+        expect(connectErrorFromReason(e).message).toBe(
+          "[resource_exhausted] message is larger than configured readMaxBytes 3 after decompression"
+        );
+      }
+    });
+    it("should ignore readMaxBytes for uncompressed envelope", async function () {
+      const got = await envelopeDecompress(
+        uncompressedEnvelope,
+        compressionReverse,
+        0
+      );
+      expect(got).toEqual(uncompressedEnvelope);
+    });
+    describe("with null compression", function () {
+      it("should not decompress uncompressed envelopes", async function () {
+        const got = await envelopeDecompress(
+          uncompressedEnvelope,
+          null,
+          Number.MAX_SAFE_INTEGER
+        );
+        expect(got).toEqual(uncompressedEnvelope);
+      });
+      it("should raise error on compressed envelope", async function () {
+        try {
+          await envelopeDecompress(
+            compressedEnvelope,
+            null,
+            Number.MAX_SAFE_INTEGER
+          );
+          fail("expected error");
+        } catch (e) {
+          expect(e).toBeInstanceOf(ConnectError);
+          expect(connectErrorFromReason(e).message).toBe(
+            "[invalid_argument] received compressed envelope, but do not know how to decompress"
+          );
+        }
+      });
+      it("should ignore readMaxBytes", async function () {
+        const got = await envelopeDecompress(uncompressedEnvelope, null, 0);
+        expect(got).toEqual(uncompressedEnvelope);
+      });
+    });
+  });
+
+  describe("envelopeCompress()", function () {
+    it("should compress uncompressed envelope", async function () {
+      const got = await envelopeCompress(
+        uncompressedEnvelope,
+        compressionReverse,
+        0
+      );
+      expect(got).toEqual(compressedEnvelope);
+    });
+    it("should compress uncompressed envelope", async function () {
+      const got = await envelopeCompress(
+        uncompressedEnvelope,
+        compressionReverse,
+        0
+      );
+      expect(got).toEqual(compressedEnvelope);
+    });
+    it("should throw on compressed input", async function () {
+      try {
+        await envelopeCompress(compressedEnvelope, compressionReverse, 0);
+        fail("expected error");
+      } catch (e) {
+        expect(e).toBeInstanceOf(ConnectError);
+        expect(connectErrorFromReason(e).message).toBe(
+          "[internal] invalid envelope, already compressed"
+        );
+      }
+    });
+    it("should honor compressMinBytes", async function () {
+      const got = await envelopeCompress(uncompressedEnvelope, null, 5);
+      expect(got).toEqual(uncompressedEnvelope);
+    });
+    describe("with null compression", function () {
+      it("should not compress", async function () {
+        const got = await envelopeCompress(uncompressedEnvelope, null, 0);
+        expect(got).toEqual(uncompressedEnvelope);
+      });
+    });
   });
 });

@@ -1,4 +1,4 @@
-// Copyright 2021-2022 Buf Technologies, Inc.
+// Copyright 2021-2023 Buf Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,6 +14,7 @@
 
 import { ConnectError } from "./connect-error.js";
 import { Code } from "./code.js";
+import { compressedFlag, Compression } from "./compression.js";
 
 /**
  * Represents an Enveloped-Message of the Connect protocol.
@@ -32,7 +33,8 @@ export interface EnvelopedMessage {
 }
 
 /**
- * Create a ReadableStream of enveloped messages from a ReadableStream of bytes.
+ * Create a WHATWG ReadableStream of enveloped messages from a ReadableStream
+ * of bytes.
  *
  * Ideally, this would simply be a TransformStream, but ReadableStream.pipeThrough
  * does not have the necessary availability at this time.
@@ -42,12 +44,14 @@ export function createEnvelopeReadableStream(
 ): ReadableStream<EnvelopedMessage> {
   let reader: ReadableStreamDefaultReader<Uint8Array>;
   let buffer = new Uint8Array(0);
+
   function append(chunk: Uint8Array): void {
     const n = new Uint8Array(buffer.length + chunk.length);
     n.set(buffer);
     n.set(chunk, buffer.length);
     buffer = n;
   }
+
   return new ReadableStream<EnvelopedMessage>({
     start() {
       reader = stream.getReader();
@@ -91,33 +95,87 @@ export function createEnvelopeReadableStream(
   });
 }
 
-export function encodeEnvelopes(...envelopes: EnvelopedMessage[]): Uint8Array {
-  const target = new ArrayBuffer(
-    envelopes.reduce(
-      (previousValue, currentValue) =>
-        previousValue + currentValue.data.length + 5,
-      0
-    )
-  );
-  let offset = 0;
-  for (const m of envelopes) {
-    offset += encodeEnvelope(m, target, offset);
+/**
+ * Compress an EnvelopedMessage.
+ *
+ * Raises Internal if an enveloped message is already compressed.
+ */
+export async function envelopeCompress(
+  envelope: EnvelopedMessage,
+  compression: Compression | null,
+  compressMinBytes: number
+): Promise<EnvelopedMessage> {
+  let { flags, data } = envelope;
+  if ((flags & compressedFlag) === compressedFlag) {
+    throw new ConnectError(
+      "invalid envelope, already compressed",
+      Code.Internal
+    );
   }
-  return new Uint8Array(target);
+  if (compression && data.byteLength >= compressMinBytes) {
+    data = await compression.compress(data);
+    flags = flags | compressedFlag;
+  }
+  return { data, flags };
 }
 
-function encodeEnvelope(
+/**
+ * Decompress an EnvelopedMessage.
+ *
+ * Raises InvalidArgument if an envelope is compressed, but compression is null.
+ *
+ * Relies on the provided Compression to raise ResourceExhausted if the
+ * *decompressed* message size is larger than readMaxBytes. If the envelope is
+ * not compressed, readMaxBytes is not honored.
+ */
+export async function envelopeDecompress(
   envelope: EnvelopedMessage,
-  target: ArrayBuffer,
-  byteOffset: number
-): number {
-  const len = envelope.data.length + 5;
-  const bytes = new Uint8Array(target, byteOffset, len);
-  bytes[0] = envelope.flags; // first byte is flags
-  for (let l = envelope.data.length, i = 4; i > 0; i--) {
-    bytes[i] = l % 256; // 4 bytes message length
-    l >>>= 8;
+  compression: Compression | null,
+  readMaxBytes: number
+): Promise<EnvelopedMessage> {
+  let { flags, data } = envelope;
+  if ((flags & compressedFlag) === compressedFlag) {
+    if (!compression) {
+      throw new ConnectError(
+        "received compressed envelope, but do not know how to decompress",
+        Code.InvalidArgument
+      );
+    }
+    data = await compression.decompress(data, readMaxBytes);
+    flags = flags ^ compressedFlag;
   }
-  bytes.set(envelope.data, 5);
-  return len;
+  return { data, flags };
+}
+
+/**
+ * Encode a single enveloped message.
+ */
+export function encodeEnvelope(flags: number, data: Uint8Array): Uint8Array {
+  const bytes = new Uint8Array(data.length + 5);
+  bytes.set(data, 5);
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  v.setUint8(0, flags); // first byte is flags
+  v.setUint32(1, data.length); // 4 bytes message length
+  return bytes;
+}
+
+/**
+ * Encode a set of enveloped messages.
+ */
+export function encodeEnvelopes(...envelopes: EnvelopedMessage[]): Uint8Array {
+  const len = envelopes.reduce(
+    (previousValue, currentValue) =>
+      previousValue + currentValue.data.length + 5,
+    0
+  );
+  const bytes = new Uint8Array(len);
+  const v = new DataView(bytes.buffer);
+  let offset = 0;
+  for (const e of envelopes) {
+    v.setUint8(offset, e.flags); // first byte is flags
+    v.setUint32(offset + 1, e.data.length); // 4 bytes message length
+    bytes.set(e.data, offset + 5);
+    offset += e.data.length + 5;
+  }
+  return bytes;
 }

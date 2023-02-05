@@ -1,4 +1,4 @@
-// Copyright 2021-2022 Buf Technologies, Inc.
+// Copyright 2021-2023 Buf Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-export * from "./grpc-transport.js";
 export {
   createCallbackClient,
   CallbackClient,
@@ -27,8 +26,25 @@ export {
   Interceptor,
   UnaryRequest,
   UnaryResponse,
-  StreamingRequest,
-  StreamingConn,
+  StreamRequest,
+  StreamResponse,
   encodeBinaryHeader,
   decodeBinaryHeader,
 } from "@bufbuild/connect-core";
+
+export { createGrpcWebTransport } from "./grpc-web-transport.js";
+export { createGrpcTransport } from "./grpc-transport.js";
+export { createConnectTransport } from "./connect-transport.js";
+export { compressionBrotli, compressionGzip } from "./compression.js";
+export {
+  ServiceImpl,
+  MethodImpl,
+  HandlerContext,
+  unimplementService,
+} from "./implementation.js";
+export {
+  Handler,
+  createHandler,
+  createHandlers,
+  mergeHandlers,
+} from "./handler.js";

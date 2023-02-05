@@ -10,12 +10,13 @@ TMP   = .tmp
 BIN   = .tmp/bin
 BUILD = .tmp/build
 GEN   = .tmp/gen
-CROSSTEST_VERSION := 4f4e96d8fea3ed9473b90a964a5ba429e7ea5649
-LICENSE_HEADER_YEAR_RANGE := 2021-2022
-LICENSE_IGNORE := .tmp\/ node_module\/ packages\/connect-web-bench\/src\/gen\/ packages\/connect-web\/dist\/ scripts\/ packages\/connect-web-test\/src\/gen packages\/connect-node-test\/src\/gen
+CROSSTEST_VERSION := 2c228a09c52e3a95263034c1fb79119d33ab3258
+LICENSE_HEADER_YEAR_RANGE := 2021-2023
+LICENSE_IGNORE := -e .tmp\/ -e node_modules\/ -e packages\/.*\/src\/gen\/ -e packages\/.*\/dist\/ -e scripts\/
 NODE18_VERSION ?= v18.2.0
-NODE18_OS = $(subst Linux,linux,$(subst Darwin,darwin,$(shell uname -s)))
-NODE18_ARCH = $(subst x86_64,x64,$(subst aarch64,arm64,$(shell uname -m)))
+NODE16_VERSION ?= v16.15.0
+NODE_OS = $(subst Linux,linux,$(subst Darwin,darwin,$(shell uname -s)))
+NODE_ARCH = $(subst x86_64,x64,$(subst aarch64,arm64,$(shell uname -m)))
 
 node_modules: package-lock.json
 	npm ci
@@ -28,9 +29,16 @@ $(BIN)/license-header: Makefile
 
 $(BIN)/node18: Makefile
 	@mkdir -p $(@D)
-	curl -sSL https://nodejs.org/dist/$(NODE18_VERSION)/node-$(NODE18_VERSION)-$(NODE18_OS)-$(NODE18_ARCH).tar.xz | tar xJ -C $(TMP) node-$(NODE18_VERSION)-$(NODE18_OS)-$(NODE18_ARCH)/bin/node
-	mv $(TMP)/node-$(NODE18_VERSION)-$(NODE18_OS)-$(NODE18_ARCH)/bin/node $(@)
-	rm -r $(TMP)/node-$(NODE18_VERSION)-$(NODE18_OS)-$(NODE18_ARCH)
+	curl -sSL https://nodejs.org/dist/$(NODE18_VERSION)/node-$(NODE18_VERSION)-$(NODE_OS)-$(NODE_ARCH).tar.xz | tar xJ -C $(TMP) node-$(NODE18_VERSION)-$(NODE_OS)-$(NODE_ARCH)/bin/node
+	mv $(TMP)/node-$(NODE18_VERSION)-$(NODE_OS)-$(NODE_ARCH)/bin/node $(@)
+	rm -r $(TMP)/node-$(NODE18_VERSION)-$(NODE_OS)-$(NODE_ARCH)
+	@touch $(@)
+
+$(BIN)/node16: Makefile
+	@mkdir -p $(@D)
+	curl -sSL https://nodejs.org/dist/$(NODE16_VERSION)/node-$(NODE16_VERSION)-$(NODE_OS)-$(NODE_ARCH).tar.xz | tar xJ -C $(TMP) node-$(NODE16_VERSION)-$(NODE_OS)-$(NODE_ARCH)/bin/node
+	mv $(TMP)/node-$(NODE16_VERSION)-$(NODE_OS)-$(NODE_ARCH)/bin/node $(@)
+	rm -r $(TMP)/node-$(NODE16_VERSION)-$(NODE_OS)-$(NODE_ARCH)
 	@touch $(@)
 
 $(BUILD)/protoc-gen-connect-web: node_modules tsconfig.base.json packages/protoc-gen-connect-web/tsconfig.json $(shell find packages/protoc-gen-connect-web/src -name '*.ts')
@@ -39,7 +47,7 @@ $(BUILD)/protoc-gen-connect-web: node_modules tsconfig.base.json packages/protoc
 	@mkdir -p $(@D)
 	@touch $(@)
 
-$(BUILD)/connect-core: $(GEN)/connect-core node_modules tsconfig.base.json packages/connect-core/tsconfig.json $(shell find packages/connect-core/src -name '*.ts')
+$(BUILD)/connect-core: $(GEN)/connect-core node_modules tsconfig.base.json packages/connect-core/tsconfig.json $(shell find packages/connect-core/src -name '*.ts') packages/connect-core/*.js
 	npm run -w packages/connect-core clean
 	npm run -w packages/connect-core build
 	@mkdir -p $(@D)
@@ -70,7 +78,7 @@ $(BUILD)/connect-web-test: $(BUILD)/connect-web-next $(BUILD)/connect-web $(GEN)
 	@mkdir -p $(@D)
 	@touch $(@)
 
-$(BUILD)/connect-node-test: $(BUILD)/connect-node $(GEN)/connect-node-test packages/connect-node-test/tsconfig.json $(shell find packages/connect-node-test/src -name '*.ts')
+$(BUILD)/connect-node-test: $(BUILD)/connect-node $(BUILD)/connect-web-next $(GEN)/connect-node-test packages/connect-node-test/tsconfig.json $(shell find packages/connect-node-test/src -name '*.ts')
 	npm run -w packages/connect-node-test clean
 	npm run -w packages/connect-node-test build
 	@mkdir -p $(@D)
@@ -81,35 +89,34 @@ $(BUILD)/example: $(GEN)/example $(BUILD)/connect-web packages/example/tsconfig.
 	@mkdir -p $(@D)
 	@touch $(@)
 
-$(GEN)/connect-core: node_modules/.bin/protoc-gen-es $(shell find packages/connect-core/proto -name '*.proto') Makefile
+$(GEN)/connect-core: node_modules/.bin/protoc-gen-es packages/connect-core/buf.gen.yaml $(shell find packages/connect-core/src -name '*.proto') Makefile
 	rm -rf packages/connect-core/src/gen/*
 	npm run -w packages/connect-core generate
 	@mkdir -p $(@D)
 	@touch $(@)
 
-$(GEN)/connect-web-test: node_modules/.bin/protoc-gen-es $(BUILD)/protoc-gen-connect-web Makefile
+$(GEN)/connect-web-test: node_modules/.bin/protoc-gen-es $(BUILD)/protoc-gen-connect-web packages/connect-web-test/buf.gen.yaml Makefile
 	rm -rf packages/connect-web-test/src/gen/*
 	npm run -w packages/connect-web-test generate https://github.com/bufbuild/connect-crosstest.git#ref=$(CROSSTEST_VERSION),subdir=internal/proto
 	npm run -w packages/connect-web-test generate buf.build/bufbuild/eliza
 	@mkdir -p $(@D)
 	@touch $(@)
 
-$(GEN)/connect-node-test: node_modules/.bin/protoc-gen-es $(BUILD)/protoc-gen-connect-web Makefile
+$(GEN)/connect-node-test: node_modules/.bin/protoc-gen-es $(BUILD)/protoc-gen-connect-web packages/connect-node-test/buf.gen.yaml Makefile
 	rm -rf packages/connect-node-test/src/gen/*
 	npm run -w packages/connect-node-test generate https://github.com/bufbuild/connect-crosstest.git#ref=$(CROSSTEST_VERSION),subdir=internal/proto
-	npm run -w packages/connect-node-test generate buf.build/bufbuild/eliza
 	@mkdir -p $(@D)
 	@touch $(@)
 
-$(GEN)/connect-web-bench: node_modules/.bin/protoc-gen-es $(BUILD)/protoc-gen-connect-web Makefile
+$(GEN)/connect-web-bench: node_modules/.bin/protoc-gen-es $(BUILD)/protoc-gen-connect-web packages/connect-web-bench/buf.gen.yaml Makefile
 	rm -rf packages/connect-web-bench/src/gen/*
 	npm run -w packages/connect-web-bench generate buf.build/bufbuild/eliza:847d7675503fd7aef7137c62376fdbabcf777568
 	@mkdir -p $(@D)
 	@touch $(@)
 
-$(GEN)/example: node_modules/.bin/protoc-gen-es $(BUILD)/protoc-gen-connect-web $(shell find packages/example -name '*.proto')
-	rm -rf packages/example/src/*_pb.ts packages/example/src/*_connectweb.ts
-	npm run -w packages/example generate
+$(GEN)/example: node_modules/.bin/protoc-gen-es $(BUILD)/protoc-gen-connect-web packages/example/buf.gen.yaml $(shell find packages/example -name '*.proto')
+	rm -rf packages/example/src/gen/*
+	npm run -w packages/example buf:generate
 	@mkdir -p $(@D)
 	@touch $(@)
 
@@ -137,28 +144,35 @@ testcore: $(BUILD)/connect-core
 	npm run -w packages/connect-core jasmine
 
 .PHONY: testnode
-testnode: $(BIN)/node18 $(BUILD)/connect-node-test
+testnode: $(BIN)/node16 $(BIN)/node18 $(BUILD)/connect-node-test
 	$(MAKE) crosstestserverrun
-	cd packages/connect-node-test && PATH="$(abspath $(BIN)):$(PATH)" NODE_TLS_REJECT_UNAUTHORIZED=0 node18 ../../node_modules/.bin/jasmine --config=jasmine.json
+	cd packages/connect-node-test && PATH="$(abspath $(BIN)):$(PATH)" node16 --trace-warnings ../../node_modules/.bin/jasmine --config=jasmine.json
+	cd packages/connect-node-test && PATH="$(abspath $(BIN)):$(PATH)" node18 --trace-warnings ../../node_modules/.bin/jasmine --config=jasmine.json
 	$(MAKE) crosstestserverstop
 
 .PHONY: testwebnode
 testwebnode: $(BIN)/node18 $(BUILD)/connect-web-test
 	$(MAKE) crosstestserverrun
+	$(MAKE) connectnodeserverrun
 	cd packages/connect-web-test && PATH="$(abspath $(BIN)):$(PATH)" NODE_TLS_REJECT_UNAUTHORIZED=0 node18 ../../node_modules/.bin/jasmine --config=jasmine.json
 	$(MAKE) crosstestserverstop
+	$(MAKE) connectnodeserverstop
 
 .PHONY: testwebbrowser
 testwebbrowser: $(BUILD)/connect-web-test
 	$(MAKE) crosstestserverrun
+	$(MAKE) connectnodeserverrun
 	npm run -w packages/connect-web-test karma
 	$(MAKE) crosstestserverstop
+	$(MAKE) connectnodeserverstop
 
 .PHONY: testwebbrowserlocal
 testwebbrowserlocal: $(BUILD)/connect-web-test
 	$(MAKE) crosstestserverrun
+	$(MAKE) connectnodeserverrun
 	npm run -w packages/connect-web-test karma-serve
 	$(MAKE) crosstestserverstop
+	$(MAKE) connectnodeserverstop
 
 .PHONY: testwebbrowserstack
 testwebbrowserstack: $(BUILD)/connect-web-test
@@ -180,7 +194,7 @@ format: node_modules $(BIN)/license-header ## Format all files, adding license h
 			--year-range "$(LICENSE_HEADER_YEAR_RANGE)"
 
 .PHONY: bench
-bench: node_modules $(GEN)/connect-web-bench $(BUILD)/connect-web ## Benchmark code size
+bench: node_modules $(GEN)/connect-web-bench $(BUILD)/connect-web $(BUILD)/connect-web-next ## Benchmark code size
 	npm run -w packages/connect-web-bench report
 
 .PHONY: setversion
@@ -203,6 +217,8 @@ release: all ## Release @bufbuild/connect-web
 	@[ -z "$(shell git status --short)" ] || (echo "Uncommitted changes found." && exit 1);
 	npm publish \
 		--workspace packages/connect-web \
+		--workspace packages/connect-node \
+		--workspace packages/connect-core \
 		--workspace packages/protoc-gen-connect-web
 
 .PHONY: crosstestserverstop
@@ -217,6 +233,18 @@ crosstestserverrun: crosstestserverstop
 	docker run --rm --name servergrpc -p 8083:8083 -d \
 		bufbuild/connect-crosstest:$(CROSSTEST_VERSION) \
 		/usr/local/bin/servergrpc --port "8083" --cert "cert/localhost.crt" --key "cert/localhost.key"
+
+.PHONY: connectnodeserverrun
+connectnodeserverrun: $(BUILD)/connect-node-test
+	PATH="$(abspath $(BIN)):$(PATH)" node18 packages/connect-node-test/connect-node-h1-server.mjs restart
+
+.PHONY: connectnodeserverstop
+connectnodeserverstop: $(BUILD)/connect-node-test
+	PATH="$(abspath $(BIN)):$(PATH)" node18 packages/connect-node-test/connect-node-h1-server.mjs stop
+
+.PHONY: updatelocalhostcert
+updatelocalhostcert:
+	openssl req -x509 -newkey rsa:2048 -nodes -sha256 -subj '/CN=localhost' -days 300 -keyout packages/connect-node-test/localhost-key.pem -out packages/connect-node-test/localhost-cert.pem
 
 .PHONY: checkdiff
 checkdiff:

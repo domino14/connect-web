@@ -1,4 +1,4 @@
-// Copyright 2021-2022 Buf Technologies, Inc.
+// Copyright 2021-2023 Buf Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -371,6 +371,7 @@ function createConnectRequestHeaders(
   methodKind: MethodKind,
   useBinaryFormat: boolean
 ): Headers {
+  const protocolVersion = "1";
   const result = new Headers(headers ?? {});
   let type = "application/";
   if (methodKind != MethodKind.Unary) {
@@ -381,6 +382,7 @@ function createConnectRequestHeaders(
   if (timeoutMs !== undefined) {
     result.set("Connect-Timeout-Ms", `${timeoutMs}`);
   }
+  result.set("Connect-Protocol-Version", protocolVersion);
   return result;
 }
 

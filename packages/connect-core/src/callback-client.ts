@@ -1,4 +1,4 @@
-// Copyright 2021-2022 Buf Technologies, Inc.
+// Copyright 2021-2023 Buf Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,6 +26,7 @@ import { Code } from "./code.js";
 import { makeAnyClient } from "./any-client.js";
 import { connectErrorFromReason } from "./connect-error.js";
 import type { CallOptions } from "./call-options.js";
+import { createAsyncIterable } from "./async-iterable.js";
 
 // prettier-ignore
 /**
@@ -49,7 +50,7 @@ export type CallbackClient<T extends ServiceType> = {
   [P in keyof T["methods"]]:
     T["methods"][P] extends MethodInfoUnary<infer I, infer O>           ? (request: PartialMessage<I>, callback: (error: ConnectError | undefined, response: O) => void, options?: CallOptions) => CancelFn
   : T["methods"][P] extends MethodInfoServerStreaming<infer I, infer O> ? (request: PartialMessage<I>, messageCallback: (response: O) => void, closeCallback: (error: ConnectError | undefined) => void, options?: CallOptions) => CancelFn
-  // TODO figure out shapes for client-streaming and bidi-streaming
+  // TODO(TCN-568, TCN-679) add methods for client-streaming and bidi-streaming
   : never;
 };
 
@@ -124,7 +125,7 @@ function createUnaryFn<I extends Message<I>, O extends Message<O>>(
  * ServerStreamingFn is the method signature for a server-streaming method of
  * a CallbackClient.
  */
-type ServerStreamingFn<I extends Message, O extends Message> = (
+type ServerStreamingFn<I extends Message<I>, O extends Message<O>> = (
   request: PartialMessage<I>,
   onResponse: (response: O) => void,
   onClose: (error: ConnectError | undefined) => void,
@@ -136,26 +137,25 @@ function createServerStreamingFn<I extends Message<I>, O extends Message<O>>(
   service: ServiceType,
   method: MethodInfo<I, O>
 ): ServerStreamingFn<I, O> {
-  return function (requestMessage, onResponse, onClose, options) {
+  return function (input, onResponse, onClose, options) {
     const abort = new AbortController();
+    const inputMessage =
+      input instanceof method.I ? input : new method.I(input);
     async function run() {
       options = wrapSignal(abort, options);
-      const conn = await transport.stream(
+      const response = await transport.stream(
         service,
         method,
         options.signal,
         options.timeoutMs,
-        options.headers
+        options.headers,
+        createAsyncIterable([inputMessage])
       );
-      await conn.send(requestMessage);
-      await conn.close();
-      options.onHeader?.(await conn.responseHeader);
-      let result = await conn.read();
-      while (!result.done) {
-        onResponse(result.value);
-        result = await conn.read();
+      options.onHeader?.(response.header);
+      for await (const message of response.message) {
+        onResponse(message);
       }
-      options.onTrailer?.(await conn.responseTrailer);
+      options.onTrailer?.(response.trailer);
       onClose(undefined);
     }
     run().catch((reason) => {

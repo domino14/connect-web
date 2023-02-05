@@ -1,4 +1,4 @@
-// Copyright 2021-2022 Buf Technologies, Inc.
+// Copyright 2021-2023 Buf Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -123,7 +123,7 @@ function createUnaryFn<I extends Message<I>, O extends Message<O>>(
  * ServerStreamingFn is the method signature for a server-streaming method of
  * a CallbackClient.
  */
-type ServerStreamingFn<I extends Message, O extends Message> = (
+type ServerStreamingFn<I extends Message<I>, O extends Message<O>> = (
   request: PartialMessage<I>,
   onResponse: (response: O) => void,
   onClose: (error: ConnectError | undefined) => void,

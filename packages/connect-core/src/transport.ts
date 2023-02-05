@@ -1,4 +1,4 @@
-// Copyright 2021-2022 Buf Technologies, Inc.
+// Copyright 2021-2023 Buf Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ import type {
   PartialMessage,
   ServiceType,
 } from "@bufbuild/protobuf";
-import type { StreamingConn, UnaryResponse } from "./interceptor.js";
+import type { StreamResponse, UnaryResponse } from "./interceptor.js";
 
 /**
  * Transport represents the underlying transport for a client.
@@ -38,14 +38,18 @@ export interface Transport {
     timeoutMs: number | undefined,
     header: HeadersInit | undefined,
     input: PartialMessage<I>
-  ): Promise<UnaryResponse<O>>;
+  ): Promise<UnaryResponse<I, O>>;
 
-  // TODO update docs
+  /**
+   * Call a streaming RPC - a method that takes zero or more input messages,
+   * and responds with zero or more output messages.
+   */
   stream<I extends Message<I> = AnyMessage, O extends Message<O> = AnyMessage>(
     service: ServiceType,
     method: MethodInfo<I, O>,
     signal: AbortSignal | undefined,
     timeoutMs: number | undefined,
-    header: HeadersInit | undefined
-  ): Promise<StreamingConn<I, O>>;
+    header: HeadersInit | undefined,
+    input: AsyncIterable<I>
+  ): Promise<StreamResponse<I, O>>;
 }

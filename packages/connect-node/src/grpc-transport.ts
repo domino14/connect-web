@@ -1,4 +1,4 @@
-// Copyright 2021-2022 Buf Technologies, Inc.
+// Copyright 2021-2023 Buf Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,87 +12,113 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import type {
-  StreamingConn,
-  StreamingRequest,
+import {
+  Code,
+  Compression,
+  ConnectError,
+  createAsyncIterable,
+  createMethodSerializationLookup,
+  createMethodUrl,
+  Interceptor,
+  pipe,
+  pipeTo,
+  transformCompressEnvelope,
+  transformDecompressEnvelope,
+  transformJoinEnvelopes,
+  transformNormalizeMessage,
+  transformParseEnvelope,
+  transformSerializeEnvelope,
+  transformSplitEnvelope,
   Transport,
+  runUnary,
+  runStreaming,
+  StreamRequest,
+  StreamResponse,
+  UnaryRequest,
   UnaryResponse,
 } from "@bufbuild/connect-core";
 import {
-  Code,
-  ConnectError,
-  Interceptor,
-  runStreaming,
-  runUnary,
-} from "@bufbuild/connect-core";
-import {
+  createRequestHeaderWithCompression,
+  validateResponseWithCompression,
+  validateTrailer,
+} from "@bufbuild/connect-core/protocol-grpc";
+import type {
   AnyMessage,
+  BinaryReadOptions,
+  BinaryWriteOptions,
+  JsonReadOptions,
+  JsonWriteOptions,
   Message,
-  MessageType,
   MethodInfo,
-  MethodKind,
   PartialMessage,
-  protoBase64,
   ServiceType,
 } from "@bufbuild/protobuf";
-import * as grpc from "@grpc/grpc-js";
-
-/* eslint-disable */
-
-// TODO this transport is just a placeholder, it only uses @grpc/grpc-js so that
-//      we can verify that our Transport interface works out.
+import type {
+  NodeHttp1TransportOptions,
+  NodeHttp2TransportOptions,
+} from "./node-transport-options.js";
+import { validateNodeTransportOptions } from "./node-transport-options.js";
 
 /**
- * Options for the gRPC transport.
+ * Options used to configure the gRPC-web transport.
  *
- * Note that the gRPC transport is a proof of concept. It does not support
- * cancellation and error details, and it may have bugs.
+ * See createGrpcTransport().
  */
-interface GrpcTransportOptions {
-  address: string;
-  channelCredentials: grpc.ChannelCredentials;
-  clientOptions?: grpc.ClientOptions;
+type GrpcTransportOptions = (
+  | NodeHttp1TransportOptions
+  | NodeHttp2TransportOptions
+) & {
+  /**
+   * Base URI for all HTTP requests.
+   *
+   * Requests will be made to <baseUrl>/<package>.<service>/method
+   *
+   * Example: `baseUrl: "https://example.com/my-api"`
+   *
+   * This will make a `POST /my-api/my_package.MyService/Foo` to
+   * `example.com` via HTTPS.
+   */
+  baseUrl: string;
+
+  /**
+   * By default, clients use the binary format for gRPC-web, because
+   * not all gRPC-web implementations support JSON.
+   */
+  useBinaryFormat?: boolean;
 
   /**
    * Interceptors that should be applied to all calls running through
    * this transport. See the Interceptor type for details.
    */
   interceptors?: Interceptor[];
-}
 
-interface GrpcTransport extends Transport {
-  close(): void;
+  /**
+   * Options for the JSON format.
+   */
+  jsonOptions?: Partial<JsonReadOptions & JsonWriteOptions>;
 
-  getChannel(): grpc.ChannelInterface;
+  /**
+   * Options for the binary wire format.
+   */
+  binaryOptions?: Partial<BinaryReadOptions & BinaryWriteOptions>;
 
-  waitForReady(deadline: number, callback: (error?: Error) => void): void;
-}
+  // TODO document
+  acceptCompression?: Compression[];
+  sendCompression?: Compression;
+  compressMinBytes?: number;
+  readMaxBytes?: number;
+  writeMaxBytes?: number;
+
+  keepSessionAlive?: boolean;
+};
 
 /**
- * Create a gRPC transport for Node.js using the @grpc/grpc-js package.
- *
- * Note that the gRPC transport is a proof of concept. It does not support
- * cancellation and error details, and it may have bugs.
+ * Create a Transport for the gRPC protocol using the Node.js `http`, `http2`,
+ * or `http2` module.
  */
-export function createGrpcTransport(
-  options: GrpcTransportOptions
-): GrpcTransport {
-  const transportOptions = options;
-  const client = new grpc.Client(
-    transportOptions.address,
-    transportOptions.channelCredentials,
-    transportOptions.clientOptions
-  );
+export function createGrpcTransport(options: GrpcTransportOptions): Transport {
+  const opt = validateNodeTransportOptions(options);
   return {
-    close() {
-      client.close();
-    },
-    getChannel(): grpc.ChannelInterface {
-      return client.getChannel();
-    },
-    waitForReady(deadline: number, callback: (error?: Error) => void) {
-      return client.waitForReady(deadline, callback);
-    },
     async unary<
       I extends Message<I> = AnyMessage,
       O extends Message<O> = AnyMessage
@@ -102,77 +128,95 @@ export function createGrpcTransport(
       signal: AbortSignal | undefined,
       timeoutMs: number | undefined,
       header: HeadersInit | undefined,
-      message: PartialMessage<I>
-    ): Promise<UnaryResponse<O>> {
-      const abortSignal = signal ?? new AbortController().signal;
-      return runUnary<I, O>(
+      input: PartialMessage<I>
+    ): Promise<UnaryResponse<I, O>> {
+      const serialization = createMethodSerializationLookup(
+        method,
+        options.binaryOptions,
+        options.jsonOptions
+      );
+      return await runUnary<I, O>(
         {
           stream: false,
           service,
           method,
-          url: `/${service.typeName}/${method.name}`,
+          url: createMethodUrl(options.baseUrl, service, method),
           init: {},
-          header: new Headers(header ?? {}),
-          message:
-            message instanceof method.I ? message : new method.I(message),
-          signal: abortSignal,
+          header: createRequestHeaderWithCompression(
+            opt.useBinaryFormat,
+            timeoutMs,
+            header,
+            opt.acceptCompression,
+            opt.sendCompression
+          ),
+          message: input instanceof method.I ? input : new method.I(input),
+          signal: signal ?? new AbortController().signal,
         },
-        (unaryRequest) => {
-          return new Promise((resolve, reject) => {
-            let header: Headers = new Headers();
-            let message: O | undefined;
-            let trailer: Headers = new Headers();
-            const clientCall = client.makeUnaryRequest(
-              unaryRequest.url,
-              makeSerializerFn(),
-              makeDeserializerFn(method.O),
-              unaryRequest.message,
-              grpcMetadataFromHeaders(unaryRequest.header),
+        async (req: UnaryRequest<I, O>): Promise<UnaryResponse<I, O>> => {
+          const uRes = await opt.client({
+            url: req.url,
+            method: "POST",
+            header: req.header,
+            signal: req.signal,
+            body: pipe(
+              createAsyncIterable([req.message]),
+              transformSerializeEnvelope(
+                serialization.getI(opt.useBinaryFormat),
+                opt.writeMaxBytes
+              ),
+              transformCompressEnvelope(
+                opt.sendCompression,
+                opt.compressMinBytes
+              ),
+              transformJoinEnvelopes(),
               {
-                deadline: timeoutMs ? Date.now() + timeoutMs : undefined,
-              },
-              (err: grpc.ServiceError | null, value?: O) => {
-                message = value;
+                propagateDownStreamError: true,
               }
-            );
-            if (abortSignal.aborted) {
-              clientCall.cancel();
-            }
-            abortSignal.addEventListener("abort", () => clientCall.cancel());
-
-            clientCall.on("metadata", (metadata: grpc.Metadata) => {
-              header = grpcMetadataToHeaders(metadata);
-            });
-            clientCall.on("status", (status: grpc.StatusObject) => {
-              trailer = grpcMetadataToHeaders(status.metadata);
-              if (status.code != grpc.status.OK) {
-                // We are missing support for error details here
-                reject(
-                  new ConnectError(
-                    status.details,
-                    status.code as number,
-                    undefined,
-                    mergeHeaders(header, trailer)
-                  )
-                );
-                return;
-              }
-              if (!message) {
-                reject(
-                  new ConnectError("missing response message", Code.Internal)
-                );
-                return;
-              }
-              resolve(<UnaryResponse<O>>{
-                stream: false,
-                header,
-                message,
-                trailer,
-              });
-            });
+            ),
           });
+          const { compression } = validateResponseWithCompression(
+            opt.useBinaryFormat,
+            opt.acceptCompression,
+            uRes.status,
+            uRes.header
+          );
+          const message = await pipeTo(
+            uRes.body,
+            transformSplitEnvelope(opt.readMaxBytes),
+            transformDecompressEnvelope(compression ?? null, opt.readMaxBytes),
+            transformParseEnvelope<O>(serialization.getO(opt.useBinaryFormat)),
+            async (iterable) => {
+              let message: O | undefined;
+              for await (const chunk of iterable) {
+                if (message !== undefined) {
+                  throw new ConnectError(
+                    "protocol error: received extra output message for unary method",
+                    Code.InvalidArgument
+                  );
+                }
+                message = chunk;
+              }
+              return message;
+            },
+            { propagateDownStreamError: false }
+          );
+          validateTrailer(uRes.trailer);
+          if (message === undefined) {
+            throw new ConnectError(
+              "protocol error: missing output message for unary method",
+              Code.InvalidArgument
+            );
+          }
+          return <UnaryResponse<I, O>>{
+            stream: false,
+            service,
+            method,
+            header: uRes.header,
+            message,
+            trailer: uRes.trailer,
+          };
         },
-        transportOptions.interceptors
+        options.interceptors
       );
     },
     async stream<
@@ -183,258 +227,85 @@ export function createGrpcTransport(
       method: MethodInfo<I, O>,
       signal: AbortSignal | undefined,
       timeoutMs: number | undefined,
-      header: HeadersInit | undefined
-    ): Promise<StreamingConn<I, O>> {
-      const abortSignal = signal ?? new AbortController().signal;
-      try {
-        return runStreaming<I, O>(
-          {
-            stream: true,
-            service,
-            method,
-            url: `/${service.typeName}/${method.name}`,
-            init: {},
-            signal: abortSignal,
-            requestHeader: new Headers(header ?? {}),
-          },
-          async (
-            init: StreamingRequest<I, O>
-          ): Promise<StreamingConn<I, O>> => {
-            // We are missing support for cancellation here
-
-            switch (method.kind) {
-              case MethodKind.ServerStreaming:
-                const pendingSend: I[] = [];
-                const responseHeader = defer<Headers>();
-                const clientCall = defer<grpc.ClientReadableStream<O>>();
-                const responseTrailer = defer<Headers>();
-                let callError: Error | undefined;
-                let callEnded = false;
-                const conn: StreamingConn<I, O> = {
-                  ...init,
-                  responseHeader,
-                  responseTrailer,
-                  closed: false,
-                  send(message: PartialMessage<I>): Promise<void> {
-                    if (this.closed) {
-                      return Promise.reject(
-                        new ConnectError(
-                          "cannot send, request stream already closed"
-                        )
-                      );
-                    }
-                    pendingSend.push(
-                      message instanceof method.I
-                        ? message
-                        : new method.I(message)
-                    );
-                    return Promise.resolve();
-                  },
-                  close(): Promise<void> {
-                    if (this.closed) {
-                      return Promise.reject(
-                        new ConnectError(
-                          "cannot send, request stream already closed"
-                        )
-                      );
-                    }
-                    this.closed = true;
-                    const call = client.makeServerStreamRequest(
-                      init.url,
-                      makeSerializerFn(),
-                      makeDeserializerFn(method.O),
-                      pendingSend[0],
-                      grpcMetadataFromHeaders(init.requestHeader),
-                      {
-                        deadline: timeoutMs
-                          ? Date.now() + timeoutMs
-                          : undefined,
-                      }
-                    );
-                    clientCall.resolve(call);
-                    if (abortSignal.aborted) {
-                      call.cancel();
-                    }
-                    abortSignal.addEventListener("abort", () => call.cancel());
-                    call.pause();
-
-                    call.on("metadata", (metadata: grpc.Metadata) => {
-                      responseHeader.resolve(grpcMetadataToHeaders(metadata));
-                    });
-                    call.on("status", (status: grpc.StatusObject) => {
-                      const trailer = grpcMetadataToHeaders(status.metadata);
-                      if (status.code != grpc.status.OK) {
-                        // We are missing support for error details here
-                        const e = new ConnectError(
-                          status.details,
-                          status.code as number,
-                          undefined,
-                          trailer // We are not merging response headers with the trailers here
-                        );
-                        responseHeader.reject(e);
-                        responseTrailer.reject(e);
-                      } else {
-                        responseTrailer.resolve(trailer);
-                      }
-                    });
-                    call.on("error", (error: Error) => {
-                      callError = error;
-                      responseHeader.reject(connectErrorFromGrpcError(error));
-                      responseTrailer.reject(connectErrorFromGrpcError(error));
-                    });
-                    call.on("end", () => {
-                      callEnded = true;
-                    });
-                    return Promise.resolve();
-                  },
-                  async read() {
-                    const call = await clientCall;
-                    const outcome = await new Promise<O | Error | null>(
-                      (resolve, reject) => {
-                        if (callError) {
-                          reject(connectErrorFromGrpcError(callError));
-                          return;
-                        }
-                        if (callEnded) {
-                          resolve(null);
-                          return;
-                        }
-                        call.resume();
-                        call.once("data", (data) => {
-                          resolve(data);
-                          call.pause();
-                        });
-                        call.once("error", (error) => {
-                          callError = error;
-                          reject(connectErrorFromGrpcError(error));
-                        });
-                        call.once("end", () => {
-                          if (callError) {
-                            reject(connectErrorFromGrpcError(callError));
-                            return;
-                          }
-                          resolve(null);
-                        });
-                      }
-                    );
-                    if (outcome instanceof Message) {
-                      return {
-                        done: false,
-                        value: outcome,
-                      };
-                    }
-                    return {
-                      done: true,
-                      value: undefined,
-                    };
-                  },
-                };
-                return conn;
-              default:
-                throw new ConnectError("method kind not implemented");
-            }
-          },
-          transportOptions.interceptors
-        );
-      } catch (e) {
-        throw connectErrorFromGrpcError(e);
-      }
+      header: HeadersInit | undefined,
+      input: AsyncIterable<I>
+    ): Promise<StreamResponse<I, O>> {
+      const serialization = createMethodSerializationLookup(
+        method,
+        options.binaryOptions,
+        options.jsonOptions
+      );
+      return runStreaming<I, O>(
+        {
+          stream: true,
+          service,
+          method,
+          url: createMethodUrl(options.baseUrl, service, method),
+          init: {},
+          signal: signal ?? new AbortController().signal,
+          header: createRequestHeaderWithCompression(
+            opt.useBinaryFormat,
+            timeoutMs,
+            header,
+            opt.acceptCompression,
+            opt.sendCompression
+          ),
+          message: pipe(input, transformNormalizeMessage(method.I), {
+            propagateDownStreamError: true,
+          }),
+        },
+        async (req: StreamRequest<I, O>) => {
+          const uRes = await opt.client({
+            url: req.url,
+            method: "POST",
+            header: req.header,
+            signal: req.signal,
+            body: pipe(
+              req.message,
+              transformNormalizeMessage(method.I),
+              transformSerializeEnvelope(
+                serialization.getI(opt.useBinaryFormat),
+                opt.writeMaxBytes
+              ),
+              transformCompressEnvelope(
+                opt.sendCompression,
+                opt.compressMinBytes
+              ),
+              transformJoinEnvelopes(),
+              { propagateDownStreamError: true }
+            ),
+          });
+          const { compression, foundStatus } = validateResponseWithCompression(
+            opt.useBinaryFormat,
+            opt.acceptCompression,
+            uRes.status,
+            uRes.header
+          );
+          const res: StreamResponse<I, O> = {
+            ...req,
+            header: uRes.header,
+            trailer: uRes.trailer,
+            message: pipe(
+              uRes.body,
+              transformSplitEnvelope(opt.readMaxBytes),
+              transformDecompressEnvelope(
+                compression ?? null,
+                opt.readMaxBytes
+              ),
+              transformParseEnvelope(serialization.getO(opt.useBinaryFormat)),
+              async function* (iterable) {
+                yield* iterable;
+                if (!foundStatus) {
+                  validateTrailer(uRes.trailer);
+                }
+              },
+              { propagateDownStreamError: true }
+            ),
+          };
+          return res;
+        },
+        options.interceptors
+      );
     },
   };
-}
-
-function makeSerializerFn<T extends Message<T>>() {
-  return (value: T): Buffer => Buffer.from(value.toBinary());
-}
-
-function makeDeserializerFn<T extends Message<T>>(type: MessageType<T>) {
-  return (buffer: Buffer): T => type.fromBinary(buffer);
-}
-
-function connectErrorFromGrpcError(
-  err: ConnectError | grpc.ServiceError | Error | unknown
-): ConnectError {
-  if (err instanceof ConnectError) {
-    return err;
-  }
-  if (typeof err == "object" && err != null && "details" in err) {
-    const se = err as grpc.ServiceError;
-    // We are missing support for error details here
-    return new ConnectError(
-      se.details,
-      se.code as number,
-      undefined,
-      grpcMetadataToHeaders(se.metadata)
-    );
-  }
-  if (err instanceof Error) {
-    return new ConnectError(err.message, Code.Internal);
-  }
-  return new ConnectError(String(err), Code.Internal);
-}
-
-function grpcMetadataFromHeaders(headers: Headers): grpc.Metadata {
-  const metadata = new grpc.Metadata();
-  headers.forEach((value, key) => {
-    if (key.toLowerCase().endsWith("-bin")) {
-      metadata.add(key, Buffer.from(protoBase64.dec(value)));
-    } else {
-      metadata.add(key, value);
-    }
-  });
-  return metadata;
-}
-
-function grpcMetadataToHeaders(metadata: grpc.Metadata): Headers {
-  const headers = new Headers();
-  for (const [a, b] of Object.entries(metadata.toHttp2Headers())) {
-    if (Array.isArray(b)) {
-      for (const e of b) {
-        headers.append(a, e);
-      }
-    } else if (b != undefined) {
-      headers.append(a, b.toString());
-    }
-  }
-  return headers;
-}
-
-function defer<T>(): Promise<T> & Ctrl<T> {
-  let res: ((v: T | PromiseLike<T>) => void) | undefined = undefined;
-  let rej: ((reason?: unknown) => void) | undefined;
-  const p = new Promise<T>((resolve, reject) => {
-    res = resolve;
-    rej = reject;
-  });
-  void p.catch(() => {
-    //
-  });
-  const c: Ctrl<T> = {
-    resolve(v) {
-      res?.(v);
-    },
-    reject(reason) {
-      rej?.(reason);
-    },
-  };
-  return Object.assign(p, c);
-}
-
-type Ctrl<T> = {
-  resolve(v: T | PromiseLike<T>): void;
-  reject(reason?: unknown): void;
-};
-
-/**
- * Create a union of several Headers objects, by appending all fields from all
- * inputs to a single Headers object.
- */
-function mergeHeaders(...headers: Headers[]): Headers {
-  const h = new Headers();
-  for (const e of headers) {
-    e.forEach((value, key) => {
-      h.append(key, value);
-    });
-  }
-  return h;
 }

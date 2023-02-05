@@ -48,15 +48,27 @@ available [fetch API](https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API
 and the [Encoding API](https://developer.mozilla.org/en-US/docs/Web/API/Encoding_API).
 The library and the generated code are compatible with ES2017 and TypeScript 4.1.
 
-Node.js is not supported. We are working on Connect for Node.js - if you are 
-interested, let us know on [Slack](https://join.slack.com/t/bufbuild/shared_invite/zt-f5k547ki-VDs_iC4TblNCu7ubhRD17w) 
-or on [GitHub discussions](https://github.com/bufbuild/connect-web/discussions).
+
+## Connect for Node.js (Preview)
+
+With [@bufbuild/connect-node](https://www.npmjs.com/package/@bufbuild/connect-node), 
+you have the option to use the same clients from Connect-Web on Node.js v18. You can 
+also use it for servers using the Node.js `http`, `https`, or `http2` modules. 
+
+Connect-Node is still in preview, so we want your feedback! We’d love to learn about
+your use cases and what you’d like to do with Connect-Node. For example, do you plan
+to use it with React, Remix, or on the edge with Vercel’s Edge Runtime? You can reach
+us either through the [Buf Slack](https://buf.build/links/slack/) or by filing a
+[GitHub issue](https://github.com/bufbuild/connect-web/issues) and we’d be more than
+happy to chat!
 
 
 ## Packages
 
 - [@bufbuild/connect-web](https://www.npmjs.com/package/@bufbuild/connect-web):
-  Implements the Connect and gRPC-web protocols ([source code](packages/connect-web)).
+  Implements browser clients for the Connect and gRPC-web protocols ([source code](packages/connect-web)).
+- [@bufbuild/connect-node](https://www.npmjs.com/package/@bufbuild/connect-node):
+  Implements Node.js clients and servers for the Connect, gRPC-web, and gRPC protocols ([source code](packages/connect-node)).
 - [@bufbuild/protoc-gen-connect-web](https://www.npmjs.com/package/@bufbuild/protoc-gen-connect-web):
   Code generator plugin for the services in your schema ([source code](packages/protoc-gen-connect-web)).
 
@@ -65,6 +77,8 @@ or on [GitHub discussions](https://github.com/bufbuild/connect-web/discussions).
 
 * [connect-web-integration](https://github.com/bufbuild/connect-web-integration):
   Example projects using Connect-Web with various JS frameworks and tooling
+* [connect-query](https://github.com/bufbuild/connect-query):
+  TypeScript-first expansion pack for TanStack Query that gives you Protobuf superpowers
 * [connect-go](https://github.com/bufbuild/connect-go):
   Go implementation of gRPC, gRPC-Web, and Connect
 * [connect-demo](https://github.com/bufbuild/connect-demo):
@@ -77,8 +91,8 @@ or on [GitHub discussions](https://github.com/bufbuild/connect-web/discussions).
 ## Status
 
 This project is a beta: we rely on it in production, but we may make a few
-changes as we gather feedback from early adopters. We're planning to release a
-stable v1 later this year.
+changes as we gather feedback from early adopters. Join us on [Slack](https://buf.build/links/slack)
+or see the [roadmap discussion](https://github.com/bufbuild/connect-web/discussions/315) for details.
 
 
 ## Legal

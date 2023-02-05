@@ -1,4 +1,4 @@
-// Copyright 2021-2022 Buf Technologies, Inc.
+// Copyright 2021-2023 Buf Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,7 +13,6 @@
 // limitations under the License.
 
 import {
-  Any,
   BoolValue,
   createRegistry,
   Message,
@@ -21,18 +20,15 @@ import {
   ScalarType,
   Struct,
 } from "@bufbuild/protobuf";
-import { Headers as UndiciHeaders } from "undici";
 import {
   ConnectError,
   connectErrorDetails,
   connectErrorFromReason,
 } from "./connect-error.js";
 import { Code } from "./code.js";
+import { node16FetchHeadersPolyfill } from "./node16-polyfill-helper.spec.js";
 
-// TODO we need to replace all Headers ctor calls in our code or require Node.js >= v18
-if (typeof globalThis.Headers !== "function") {
-  globalThis.Headers = UndiciHeaders as unknown as typeof Headers;
-}
+node16FetchHeadersPolyfill();
 
 describe("ConnectError", () => {
   describe("constructor", () => {
@@ -49,13 +45,6 @@ describe("ConnectError", () => {
       expect(e.message).toBe("[already_exists] foo");
       expect(e.rawMessage).toBe("foo");
       expect(String(e)).toBe("ConnectError: [already_exists] foo");
-    });
-    it("accepts details but ignores them in the deprecated constructor", () => {
-      const e = new ConnectError("foo", Code.AlreadyExists, [new Struct()], {
-        foo: "bar",
-      });
-      expect(e.details).toEqual([]);
-      expect(e.metadata.get("foo")).toBe("bar");
     });
     it("accepts metadata", () => {
       const e = new ConnectError("foo", Code.AlreadyExists, { foo: "bar" });
@@ -94,12 +83,10 @@ describe("connectErrorDetails()", () => {
   describe("on error with Any details", () => {
     const err = new ConnectError("foo");
     err.details.push(
-      Any.pack(
-        new ErrorDetail({
-          reason: "soirée 🎉",
-          domain: "example.com",
-        })
-      )
+      new ErrorDetail({
+        reason: "soirée 🎉",
+        domain: "example.com",
+      })
     );
     it("with empty TypeRegistry produces no details", () => {
       const details = connectErrorDetails(err, createRegistry());

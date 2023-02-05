@@ -1,4 +1,4 @@
-// Copyright 2021-2022 Buf Technologies, Inc.
+// Copyright 2021-2023 Buf Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -46,13 +46,6 @@ describe("ConnectError", () => {
       expect(e.message).toBe("[already_exists] foo");
       expect(e.rawMessage).toBe("foo");
       expect(String(e)).toBe("ConnectError: [already_exists] foo");
-    });
-    it("accepts details but ignores them in the deprecated constructor", () => {
-      const e = new ConnectError("foo", Code.AlreadyExists, [new Struct()], {
-        foo: "bar",
-      });
-      expect(e.details).toEqual([]);
-      expect(e.metadata.get("foo")).toBe("bar");
     });
     it("accepts metadata", () => {
       const e = new ConnectError("foo", Code.AlreadyExists, { foo: "bar" });
